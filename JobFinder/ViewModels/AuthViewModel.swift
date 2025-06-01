@@ -11,7 +11,7 @@ class AuthViewModel: ObservableObject {
     @Published var userSession: FirebaseAuth.User?
     @Published var errorMessage: String?
     @Published var currentUserProfile: UserProfile?
-    @Published var isLoading = false // Мы это пропустили, но если захотите, добавим позже
+    @Published var isLoading = false
 
     init() {
         self.userSession = Auth.auth().currentUser
@@ -22,10 +22,7 @@ class AuthViewModel: ObservableObject {
     }
 
     func signIn() {
-        // isLoading = true // Если используем isLoading
-        // errorMessage = nil
         Auth.auth().signIn(withEmail: email, password: password) { [weak self] authResult, error in
-            // defer { self?.isLoading = false } // Если используем isLoading
             guard let self = self else { return }
 
             if let error = error {
@@ -50,21 +47,17 @@ class AuthViewModel: ObservableObject {
     }
 
     func signUp() {
-        // isLoading = true // Если используем isLoading
-        // errorMessage = nil
         Auth.auth().createUser(withEmail: email, password: password) { [weak self] authResult, error in
             guard let self = self else { return }
 
             if let error = error {
                 self.errorMessage = error.localizedDescription
                 print("DEBUG: Ошибка регистрации - \(error.localizedDescription)")
-                // self.isLoading = false // Если используем isLoading
                 return
             }
 
             guard let user = authResult?.user else {
                 self.errorMessage = "Не удалось получить данные пользователя после регистрации."
-                // self.isLoading = false // Если используем isLoading
                 return
             }
 
@@ -76,12 +69,11 @@ class AuthViewModel: ObservableObject {
                 fullName: self.fullName,
                 email: self.email,
                 resumeURL: self.resumeURL,
-                savedJobIDs: [], // Убедитесь, что это здесь
+                savedJobIDs: [],
                 respondedJobIDs: []
             )
 
             self.saveNewUserProfile(profileData: initialProfileData) { [weak self] success in
-                // defer { self?.isLoading = false } // Если используем isLoading
                 guard let self = self else { return }
                 if success {
                     self.currentUserProfile = initialProfileData
@@ -91,7 +83,6 @@ class AuthViewModel: ObservableObject {
                     self.fullName = ""
                     self.resumeURL = ""
                 } else {
-                    // errorMessage уже должен быть установлен в saveNewUserProfile
                     print("DEBUG: Ошибка сохранения профиля после регистрации.")
                 }
             }
@@ -110,8 +101,8 @@ class AuthViewModel: ObservableObject {
             "fullName": profileData.fullName,
             "email": profileData.email,
             "resumeURL": profileData.resumeURL,
-            "savedJobIDs": profileData.savedJobIDs ?? [], // Используем ?? [] для сохранения пустого массива, если nil
-            "respondedJobIDs": profileData.respondedJobIDs ?? [] // Используем ?? [] для сохранения пустого массива, если nil
+            "savedJobIDs": profileData.savedJobIDs ?? [],
+            "respondedJobIDs": profileData.respondedJobIDs ?? []
         ]
 
         db.collection("users").document(userId).setData(userData) { error in
@@ -128,7 +119,6 @@ class AuthViewModel: ObservableObject {
     }
 
     func signOut() {
-        // isLoading = true // Если используем isLoading
         do {
             try Auth.auth().signOut()
             self.userSession = nil
@@ -139,15 +129,11 @@ class AuthViewModel: ObservableObject {
             self.errorMessage = "Ошибка выхода: \(signOutError.localizedDescription)"
             print("DEBUG: Ошибка выхода: %s", signOutError)
         }
-        // isLoading = false // Если используем isLoading
     }
 
     func fetchUserProfile(userId: String) {
-        // isLoading = true // Если используем isLoading
-        // errorMessage = nil
         let db = Firestore.firestore()
         db.collection("users").document(userId).getDocument { [weak self] (document, error) in
-            // defer { self?.isLoading = false } // Если используем isLoading
             guard let self = self else { return }
 
             if let error = error {
@@ -163,54 +149,46 @@ class AuthViewModel: ObservableObject {
                     return
                 }
                 let fullName = data["fullName"] as? String ?? ""
-                let email = data["email"] as? String ?? "" // Email также есть в Auth.auth().currentUser.email
+                let email = data["email"] as? String ?? ""
                 let resumeURL = data["resumeURL"] as? String ?? ""
                 
-                // Извлекаем новые поля
-                let savedJobIDs = data["savedJobIDs"] as? [Int] // Могут быть nil, если поле не существует или другого типа
-                let respondedJobIDs = data["respondedJobIDs"] as? [Int] // Могут быть nil
+                let savedJobIDs = data["savedJobIDs"] as? [Int]
+                let respondedJobIDs = data["respondedJobIDs"] as? [Int]
 
                 self.currentUserProfile = UserProfile(
                     id: document.documentID,
                     fullName: fullName,
                     email: email,
                     resumeURL: resumeURL,
-                    savedJobIDs: savedJobIDs,         // Присваиваем загруженное значение
-                    respondedJobIDs: respondedJobIDs  // Присваиваем загруженное значение
+                    savedJobIDs: savedJobIDs,
+                    respondedJobIDs: respondedJobIDs
                 )
                 print("DEBUG: Профиль пользователя успешно загружен (включая job IDs): \(self.currentUserProfile?.fullName ?? "N/A")")
                 self.errorMessage = nil
             } else {
                 print("DEBUG: Документ профиля пользователя не существует для userId: \(userId).")
                 self.errorMessage = "Профиль пользователя не найден."
-                // currentUserProfile останется nil или предыдущим значением, если была ошибка.
-                // Возможно, стоит установить self.currentUserProfile = nil здесь, если документ не найден.
             }
         }
     }
     
     func updateUserProfile(profileData: UserProfile, completion: @escaping (Result<Void, Error>) -> Void) {
-        // isLoading = true // Если используем isLoading
-        // errorMessage = nil
         guard let userId = profileData.id else {
             completion(.failure(NSError(domain: "AuthViewModel", code: -1, userInfo: [NSLocalizedDescriptionKey: "User ID is missing for update"])))
-            // self.isLoading = false // Если используем isLoading
             return
         }
 
         let db = Firestore.firestore()
         
-        // Создаем словарь для Firestore, включая ВСЕ поля из profileData
         let updatedData: [String: Any] = [
             "fullName": profileData.fullName,
-            "email": profileData.email, // Email здесь для полноты объекта UserProfile, хотя обычно он не меняется через этот UI
+            "email": profileData.email,
             "resumeURL": profileData.resumeURL,
-            "savedJobIDs": profileData.savedJobIDs ?? [], // Если nil, сохраняем как пустой массив
-            "respondedJobIDs": profileData.respondedJobIDs ?? [] // Если nil, сохраняем как пустой массив
+            "savedJobIDs": profileData.savedJobIDs ?? [],
+            "respondedJobIDs": profileData.respondedJobIDs ?? []
         ]
 
         db.collection("users").document(userId).setData(updatedData, merge: true) { [weak self] error in
-            // defer { self?.isLoading = false } // Если используем isLoading
             guard let self = self else { return }
             
             if let error = error {
@@ -219,9 +197,6 @@ class AuthViewModel: ObservableObject {
                 completion(.failure(error))
             } else {
                 print("DEBUG: Профиль пользователя (включая job IDs) успешно обновлен в Firestore для userId: \(userId)")
-                // Обновляем локальный currentUserProfile после успешного сохранения
-                // profileData должен содержать все актуальные поля, включая job IDs,
-                // так как ProfileView передает их из authViewModel.currentUserProfile
                 self.currentUserProfile = profileData
                 self.errorMessage = nil
                 completion(.success(()))
@@ -229,9 +204,6 @@ class AuthViewModel: ObservableObject {
         }
     }
     
-    // Добавьте эти методы в конец класса AuthViewModel
-
-    // MARK: - Saved Jobs Management
     func addSavedJobToProfile(jobID: Int, completion: @escaping (Error?) -> Void) {
         guard let userId = userSession?.uid else {
             let error = NSError(domain: "AuthViewModel", code: -1, userInfo: [NSLocalizedDescriptionKey: "Пользователь не авторизован для сохранения вакансии."])
@@ -248,7 +220,6 @@ class AuthViewModel: ObservableObject {
                 completion(error)
             } else {
                 print("DEBUG: savedJob ID (\(jobID)) успешно добавлен в Firestore для userId: \(userId)")
-                // Обновляем локальный currentUserProfile
                 if self.currentUserProfile?.savedJobIDs?.contains(jobID) == false {
                     self.currentUserProfile?.savedJobIDs?.append(jobID)
                 } else if self.currentUserProfile?.savedJobIDs == nil {
@@ -275,14 +246,12 @@ class AuthViewModel: ObservableObject {
                 completion(error)
             } else {
                 print("DEBUG: savedJob ID (\(jobID)) успешно удален из Firestore для userId: \(userId)")
-                // Обновляем локальный currentUserProfile
                 self.currentUserProfile?.savedJobIDs?.removeAll(where: { $0 == jobID })
                 completion(nil)
             }
         }
     }
 
-    // MARK: - Responded Jobs Management
     func addRespondedJobToProfile(jobID: Int, completion: @escaping (Error?) -> Void) {
         guard let userId = userSession?.uid else {
             let error = NSError(domain: "AuthViewModel", code: -1, userInfo: [NSLocalizedDescriptionKey: "Пользователь не авторизован для отметки отклика на вакансию."])
@@ -299,7 +268,6 @@ class AuthViewModel: ObservableObject {
                 completion(error)
             } else {
                 print("DEBUG: respondedJob ID (\(jobID)) успешно добавлен в Firestore для userId: \(userId)")
-                // Обновляем локальный currentUserProfile
                 if self.currentUserProfile?.respondedJobIDs?.contains(jobID) == false {
                     self.currentUserProfile?.respondedJobIDs?.append(jobID)
                 } else if self.currentUserProfile?.respondedJobIDs == nil {

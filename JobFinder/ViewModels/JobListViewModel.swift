@@ -1,9 +1,13 @@
 import Foundation
 import Combine
+import FirebaseAuth
+
 
 final class JobListViewModel: ObservableObject {
     private let service: JobServiceProtocol
     private var cancellables = Set<AnyCancellable>()
+
+    private var authViewModel: AuthViewModel
 
     @Published var jobs: [Job] = []
     @Published var searchText = ""
@@ -12,29 +16,120 @@ final class JobListViewModel: ObservableObject {
     @Published var currentPage = 1
     @Published var totalPages = 1
     @Published var isLoading = false
-    @Published var savedJobIDs: Set<Int> = []
-    @Published var responseCount: Int = UserDefaults.standard.integer(forKey: "responseCount")
-    @Published var respondedJobIDs: Set<Int> =
-    Set(UserDefaults.standard.array(forKey: "respondedJobs") as? [Int] ?? [])
 
-    func recordResponse() {
-        responseCount += 1
-        UserDefaults.standard.set(responseCount, forKey: "responseCount")
+    @Published var savedJobIDs: Set<Int> = []
+    @Published var respondedJobIDs: Set<Int> = []
+
+    init(service: JobServiceProtocol = JobService(), authViewModel: AuthViewModel) {
+        self.service = service
+        self.authViewModel = authViewModel
+
+        loadPage(1)
+
+        authViewModel.$userSession
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] firebaseUserSession in
+                self?.handleUserSessionChange(userSession: firebaseUserSession)
+            }
+            .store(in: &cancellables)
+
+        authViewModel.$currentUserProfile
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] userProfile in
+                self?.updateJobIDsFromProfile(userProfile: userProfile)
+            }
+            .store(in: &cancellables)
+
+        if authViewModel.userSession != nil {
+            if let profile = authViewModel.currentUserProfile {
+                updateJobIDsFromProfile(userProfile: profile)
+            } else {
+                self.savedJobIDs = []
+                self.respondedJobIDs = []
+            }
+        } else {
+            self.savedJobIDs = []
+            self.respondedJobIDs = []
+            print("JobListViewModel: Пользователь не авторизован. savedJobIDs и respondedJobIDs инициализированы пустыми.")
+        }
     }
-    func recordResponse(jobID: Int) {
-            guard !respondedJobIDs.contains(jobID) else { return }
-            respondedJobIDs.insert(jobID)
-            UserDefaults.standard.set(Array(respondedJobIDs), forKey: "respondedJobs")
+
+    private func handleUserSessionChange(userSession: FirebaseAuth.User?) {
+        if let user = userSession {
+            print("JobListViewModel: Пользователь вошел (\(user.uid)). Обновляем Job IDs из профиля (если есть).")
+            if let profile = authViewModel.currentUserProfile {
+                updateJobIDsFromProfile(userProfile: profile)
+            } else {
+                self.savedJobIDs = []
+                self.respondedJobIDs = []
+            }
+        } else {
+            print("JobListViewModel: Пользователь вышел. savedJobIDs и respondedJobIDs очищены.")
+            self.savedJobIDs = []
+            self.respondedJobIDs = []
+        }
+    }
+
+    private func updateJobIDsFromProfile(userProfile: UserProfile?) {
+        if let profile = userProfile, authViewModel.userSession != nil {
+            print("JobListViewModel: Обновление Job IDs из профиля Firebase: \(profile.fullName)")
+            self.savedJobIDs = Set(profile.savedJobIDs ?? [])
+            self.respondedJobIDs = Set(profile.respondedJobIDs ?? [])
+        } else if authViewModel.userSession == nil {
+           
+        }
+    }
+
+
+
+    func toggleSave(jobID: Int) {
+        guard authViewModel.userSession != nil else {
+            print("JobListViewModel: Пользователь не авторизован. Действие 'toggleSave' проигнорировано.")
+            return
         }
 
-    // Init
-    init(service: JobServiceProtocol = JobService()) {
-        self.service = service
-        loadSavedJobs()
-        loadPage(1)
+        if savedJobIDs.contains(jobID) {
+            print("JobListViewModel: Пользователь авторизован. Удаляем savedJob ID (\(jobID)) через Firebase.")
+            authViewModel.removeSavedJobFromProfile(jobID: jobID) { error in
+                if let error = error {
+                    print("DEBUG: Ошибка удаления savedJob ID (\(jobID)) из Firebase: \(error.localizedDescription)")
+                } else {
+                    print("DEBUG: Firebase успешно удалил savedJob ID (\(jobID)). Локальные ID обновятся через подписку.")
+                }
+            }
+        } else {
+            print("JobListViewModel: Пользователь авторизован. Добавляем savedJob ID (\(jobID)) через Firebase.")
+            authViewModel.addSavedJobToProfile(jobID: jobID) { error in
+                if let error = error {
+                    print("DEBUG: Ошибка добавления savedJob ID (\(jobID)) в Firebase: \(error.localizedDescription)")
+                } else {
+                    print("DEBUG: Firebase успешно добавил savedJob ID (\(jobID)). Локальные ID обновятся через подписку.")
+                }
+            }
+        }
     }
 
-    // Computed
+    func recordResponse(jobID: Int) {
+        guard authViewModel.userSession != nil else {
+            print("JobListViewModel: Пользователь не авторизован. Действие 'recordResponse' проигнорировано.")
+            return
+        }
+
+        guard !respondedJobIDs.contains(jobID) else {
+            print("JobListViewModel: Уже откликались на вакансию ID (\(jobID)).")
+            return
+        }
+
+        print("JobListViewModel: Пользователь авторизован. Добавляем respondedJob ID (\(jobID)) через Firebase.")
+        authViewModel.addRespondedJobToProfile(jobID: jobID) { error in
+            if let error = error {
+                print("DEBUG: Ошибка добавления respondedJob ID (\(jobID)) в Firebase: \(error.localizedDescription)")
+            } else {
+                print("DEBUG: Firebase успешно добавил respondedJob ID (\(jobID)). Локальные ID обновятся через подписку.")
+            }
+        }
+    }
+
     var locations: [String] {
         let names = jobs.flatMap { $0.locations.map(\.name) }
         return ["All"] + Set(names).sorted()
@@ -56,43 +151,27 @@ final class JobListViewModel: ObservableObject {
         }
     }
 
-    // Pagination
     func loadPage(_ page: Int) {
         guard !isLoading && page <= totalPages else { return }
         isLoading = true
         service.fetchJobs(page: page) { [weak self] result in
             guard let self = self else { return }
-            switch result {
-            case .success(let resp):
-                self.totalPages = resp.page_count
-                self.currentPage = resp.page
-                if page == 1 {
-                    self.jobs = resp.results
-                } else {
-                    self.jobs.append(contentsOf: resp.results)
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let resp):
+                    self.totalPages = resp.page_count
+                    self.currentPage = resp.page
+                    if page == 1 {
+                        self.jobs = resp.results
+                    } else {
+                        let newJobs = resp.results.filter { newJob in !self.jobs.contains(where: { $0.id == newJob.id }) }
+                        self.jobs.append(contentsOf: newJobs)
+                    }
+                case .failure(let err):
+                    print("Error loading jobs:", err)
                 }
-            case .failure(let err):
-                print("Error loading jobs:", err)
+                self.isLoading = false
             }
-            self.isLoading = false
         }
-    }
-
-    // Persistence
-    private func loadSavedJobs() {
-        if let array = UserDefaults.standard.array(forKey: "savedJobs") as? [Int] {
-            savedJobIDs = Set(array)
-        }
-    }
-    func toggleSave(jobID: Int) {
-        if savedJobIDs.contains(jobID) {
-            savedJobIDs.remove(jobID)
-        } else {
-            savedJobIDs.insert(jobID)
-        }
-        saveSavedJobs()
-    }
-    private func saveSavedJobs() {
-        UserDefaults.standard.set(Array(savedJobIDs), forKey: "savedJobs")
     }
 }
