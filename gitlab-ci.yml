@@ -1,0 +1,27 @@
+stages:
+  - build
+  - test
+
+variables:
+  PROJECT_NAME: "JobFinder"
+  SCHEME: "JobFinder"
+  DESTINATION: "platform=iOS Simulator,name=iPhone 16"
+
+before_script:
+  - xcodebuild -version
+
+build:
+  stage: build
+  script:
+    - xcodebuild clean build -project $PROJECT_NAME.xcodeproj -scheme $SCHEME -destination "$DESTINATION"
+  tags:
+    - macos
+    - runner
+
+test:
+  stage: test
+  script:
+    - xcodebuild test -project $PROJECT_NAME.xcodeproj -scheme $SCHEME -destination "$DESTINATION" -skip-testing JobFinderUITests
+  tags:
+    - macos
+    - runner
